@@ -152,8 +152,38 @@ function defaultCorners() {
   const w = srcCanvas.width, h = srcCanvas.height, mx = w * 0.08, my = h * 0.08;
   return [{ x: mx, y: my }, { x: w - mx, y: my }, { x: w - mx, y: h - my }, { x: mx, y: h - my }];
 }
+// Méthode 1 : le papier est la grande zone claire de la photo
+function detectPaper() {
+  if (!cvReady) return null;
+  let src = cv.imread(srcCanvas), gray = new cv.Mat(), bin = new cv.Mat(), contours = new cv.MatVector(), hier = new cv.Mat(), res = null;
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(9, 9), 0);
+    cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    cv.morphologyEx(bin, bin, cv.MORPH_CLOSE, cv.Mat.ones(25, 25, cv.CV_8U));
+    cv.findContours(bin, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const total = src.rows * src.cols; let bestArea = total * 0.06, best = null;
+    for (let i = 0; i < contours.size(); i++) {
+      const c = contours.get(i), a = cv.contourArea(c);
+      if (a > bestArea && a < total * 0.92) { bestArea = a; best = c; }
+    }
+    if (best) {
+      const ap = new cv.Mat(); cv.approxPolyDP(best, ap, 0.03 * cv.arcLength(best, true), true);
+      let pts = [];
+      if (ap.rows === 4 && cv.isContourConvex(ap)) { for (let j = 0; j < 4; j++) pts.push({ x: ap.intAt(j, 0), y: ap.intAt(j, 1) }); }
+      else { pts = cv.RotatedRect.points(cv.minAreaRect(best)).map(p => ({ x: p.x, y: p.y })); }
+      ap.delete(); res = orderPoints(pts);
+    }
+  } catch (e) { res = null; }
+  [src, gray, bin, contours, hier].forEach(m => { try { m.delete(); } catch (_) {} });
+  return res;
+}
 function detectCorners() {
-  if (!cvReady) return defaultCorners();
+  return detectPaper() || detectEdges() || defaultCorners();
+}
+// Méthode 2 : contours (repli)
+function detectEdges() {
+  if (!cvReady) return null;
   let src = cv.imread(srcCanvas), gray = new cv.Mat(), blur = new cv.Mat(), edges = new cv.Mat();
   let contours = new cv.MatVector(), hier = new cv.Mat(), res = null;
   try {
@@ -177,7 +207,7 @@ function detectCorners() {
     }
   } catch (e) { res = null; }
   [src, gray, blur, edges, contours, hier].forEach(m => { try { m.delete(); } catch (_) {} });
-  return res || defaultCorners();
+  return res;
 }
 
 // ---------- Étape 1 : cadrage manuel ----------
@@ -243,10 +273,11 @@ function montrer() {
   $('actions').style.display = 'flex';
 }
 
-$('valider').onclick = async () => {
+async function valider() {
   await libs; traiter(); $('cropbox').style.display = 'none'; montrer();
   $('send').disabled = false; lireTicket();
-};
+}
+$('valider').onclick = valider;
 $('mode').onclick = () => { bw = !bw; $('mode').textContent = bw ? 'Noir et blanc' : 'Couleur'; traiter(); montrer(); };
 $('recadrer').onclick = showCrop;
 
@@ -262,7 +293,8 @@ $('cam').addEventListener('change', async e => {
   e.target.value = '';
   await libs;
   corners = detectCorners();
-  showCrop();
+  setStatus('Cadrage automatique…');
+  valider();   // tout est automatique ; « Recadrer » permet de corriger à la main
 });
 
 // ---------- Envoi ----------
